@@ -1,0 +1,23 @@
+{
+  "name": "pi-prompt-reviewer",
+  "version": "0.1.0",
+  "description": "Review prompts before sending them to the main pi session.",
+  "keywords": ["pi-package", "pi", "extension", "prompt-review"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/surfdude75/pi-prompt-reviewer.git"
+  },
+  "homepage": "https://github.com/surfdude75/pi-prompt-reviewer",
+  "bugs": {
+    "url": "https://github.com/surfdude75/pi-prompt-reviewer/issues"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-ai": "*",
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  }
+}

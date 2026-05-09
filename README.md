@@ -11,23 +11,22 @@ original request was unclear.
 `pi-prompt-reviewer` is a [pi](https://pi.dev) extension that reviews your
 prompt before it is sent to the main session.
 
+![pi-prompt-reviewer preview](https://raw.githubusercontent.com/surfdude75/pi-prompt-reviewer/master/assets/preview.png)
+
 ## Features
 
 - intercepts normal prompts before they are sent
 - rewrites prompts for clarity while preserving intent
 - can include recent conversation context when useful
 - lets you choose the reviewer model and thinking level
-- tests explicit reviewer model and thinking changes before saving them
 - loads the reviewed prompt back into the editor automatically
-- shows compact review details in a widget above the editor instead of a modal dialog
 - lets you restore the original prompt with a command or shortcut
 - displays token usage and cost for the review step
-- retries once with a safe fallback if the reviewer returns no text
 
 ## Install
 
 ```bash
-pi install git:github.com/surfdude75/pi-prompt-reviewer
+pi install npm:pi-prompt-reviewer
 ```
 
 After installing or editing the extension, reload pi:

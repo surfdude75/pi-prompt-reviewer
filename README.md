@@ -11,7 +11,7 @@ original request was unclear.
 `pi-prompt-reviewer` is a [pi](https://pi.dev) extension that reviews your
 prompt before it is sent to the main session.
 
-![pi-prompt-reviewer preview](https://raw.githubusercontent.com/surfdude75/pi-prompt-reviewer/master/assets/preview.png)
+![pi-prompt-reviewer preview](https://raw.githubusercontent.com/surfdude75/pi-prompt-reviewer/refs/heads/master/assets/preview.png)
 
 ## Features
 

@@ -95,7 +95,7 @@ const TARGET_LANGUAGE_MATCH_INPUT_ALIASES = new Set(["match input", "match-input
 const REVIEW_STATE_ENTRY = "prompt-review:state";
 const REVIEW_WIDGET_KEY = "prompt-review";
 const REVERT_SHORTCUT_LABEL = "Ctrl+Alt+R";
-const SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL = "Ctrl+S";
+const SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL = "Ctrl+Shift+S";
 const REVIEW_CONFIG_TEST_PROMPT = "Reply with exactly OK and nothing else.";
 const MAX_CONTEXT_CHARS = 4_000;
 const AUTO_REVIEWER_MODEL_CANDIDATES = [
@@ -1367,7 +1367,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerShortcut(Key.ctrl("s"), {
+  pi.registerShortcut(Key.ctrlShift("s"), {
     description: "Submit the current prompt without prompt review",
     handler: async (ctx) => {
       submitEditorWithoutReview(ctx);

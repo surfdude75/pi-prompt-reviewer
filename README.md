@@ -19,6 +19,7 @@ prompt before it is sent to the main session.
 - rewrites prompts for clarity while preserving intent
 - can include recent conversation context when useful
 - lets you choose the target language, reviewer model, and thinking level
+- remembers the target language, reviewer model, and thinking level across sessions
 - loads the reviewed prompt back into the editor automatically
 - lets you submit immediately without review via `Ctrl+Shift+S`
 - lets you restore the original prompt with a command or shortcut
@@ -165,6 +166,9 @@ This is usually the best balance of speed, cost, and review quality.
 
 Thinking changes are also tested before they are saved. If the test fails, the
 extension warns you and keeps the previous reviewer thinking level.
+
+Target language, reviewer model, and reviewer thinking choices are saved across
+sessions. The enabled/disabled state and context mode remain session-specific.
 
 ## Retry behavior
 

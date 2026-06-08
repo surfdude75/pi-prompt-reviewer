@@ -1,3 +1,5 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
 import {
   createAgentSession,
@@ -19,6 +21,13 @@ type ReviewState = {
   targetLanguage: string;
   reviewerModel?: string;
   reviewerThinking: ReviewerThinkingLevel;
+};
+
+type ReviewPreferences = Pick<ReviewState, "targetLanguage" | "reviewerModel" | "reviewerThinking">;
+
+type LoadedReviewPreferences = {
+  preferences: ReviewPreferences;
+  source: "file" | "missing" | "invalid";
 };
 
 type PendingReview = {
@@ -93,6 +102,7 @@ const TARGET_LANGUAGE_OPTIONS = [
 ] as const;
 const TARGET_LANGUAGE_MATCH_INPUT_ALIASES = new Set(["match input", "match-input", "match", "input", "auto"]);
 const REVIEW_STATE_ENTRY = "prompt-review:state";
+const REVIEW_PREFERENCES_FILE = "prompt-reviewer.json";
 const REVIEW_WIDGET_KEY = "prompt-review";
 const REVERT_SHORTCUT_LABEL = "Ctrl+Alt+R";
 const SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL = "Ctrl+Shift+S";
@@ -263,6 +273,10 @@ function buildHelpText(
     "- off is the fastest and cheapest default",
     "- higher levels may improve edge-case rewrites but cost more and can be slower",
     "- thinking changes are tested before they are saved",
+    "",
+    "Persistent preferences:",
+    "- target language, reviewer model, and reviewer thinking are saved across sessions",
+    "- enabled/disabled and context mode remain session-specific settings",
     "",
     "Bypasses:",
     "- slash commands and !bash shortcuts are not reviewed",
@@ -762,6 +776,81 @@ async function testReviewerConfiguration(
   }
 }
 
+function getDefaultReviewPreferences(): ReviewPreferences {
+  return {
+    targetLanguage: DEFAULT_TARGET_LANGUAGE,
+    reviewerModel: undefined,
+    reviewerThinking: DEFAULT_REVIEWER_THINKING,
+  };
+}
+
+function getReviewPreferencesPath(): string {
+  return join(getAgentDir(), "extensions", REVIEW_PREFERENCES_FILE);
+}
+
+function normalizeReviewPreferences(
+  preferences: Partial<ReviewPreferences> | undefined,
+  fallback: ReviewPreferences = getDefaultReviewPreferences(),
+): ReviewPreferences {
+  const normalized: ReviewPreferences = { ...fallback };
+
+  if (typeof preferences?.targetLanguage === "string" && preferences.targetLanguage.trim()) {
+    normalized.targetLanguage = normalizeTargetLanguage(preferences.targetLanguage);
+  }
+
+  if (typeof preferences?.reviewerModel === "string") {
+    const reviewerModel = preferences.reviewerModel.trim();
+    normalized.reviewerModel = !reviewerModel || reviewerModel.toLowerCase() === "auto" ? undefined : reviewerModel;
+  }
+
+  if (typeof preferences?.reviewerThinking === "string" && isThinkingLevel(preferences.reviewerThinking)) {
+    normalized.reviewerThinking = preferences.reviewerThinking;
+  }
+
+  return normalized;
+}
+
+function readReviewPreferences(fallback: ReviewPreferences): LoadedReviewPreferences {
+  const preferencesPath = getReviewPreferencesPath();
+  if (!existsSync(preferencesPath)) {
+    return { preferences: normalizeReviewPreferences(undefined, fallback), source: "missing" };
+  }
+
+  try {
+    const data = JSON.parse(readFileSync(preferencesPath, "utf8")) as Partial<ReviewPreferences>;
+    return { preferences: normalizeReviewPreferences(data), source: "file" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Warning: failed to load prompt review preferences from ${preferencesPath}: ${message}\n`);
+    return { preferences: normalizeReviewPreferences(undefined, fallback), source: "invalid" };
+  }
+}
+
+function hasCustomReviewPreferences(preferences: ReviewPreferences): boolean {
+  return (
+    normalizeTargetLanguage(preferences.targetLanguage) !== DEFAULT_TARGET_LANGUAGE
+    || Boolean(preferences.reviewerModel)
+    || preferences.reviewerThinking !== DEFAULT_REVIEWER_THINKING
+  );
+}
+
+function persistReviewPreferences(preferences: ReviewPreferences): void {
+  const preferencesPath = getReviewPreferencesPath();
+  const normalized = normalizeReviewPreferences(preferences);
+  const serialized = {
+    ...normalized,
+    reviewerModel: normalized.reviewerModel ?? "auto",
+  };
+
+  try {
+    mkdirSync(dirname(preferencesPath), { recursive: true });
+    writeFileSync(preferencesPath, `${JSON.stringify(serialized, null, 2)}\n`, "utf8");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    process.stderr.write(`Warning: failed to save prompt review preferences to ${preferencesPath}: ${message}\n`);
+  }
+}
+
 function readState(ctx: ExtensionContext): ReviewState {
   let state: ReviewState = {
     enabled: true,
@@ -792,7 +881,7 @@ function readState(ctx: ExtensionContext): ReviewState {
     if (typeof data?.reviewerModel === "string" && data.reviewerModel.trim()) {
       state = {
         ...state,
-        reviewerModel: data.reviewerModel.trim() === "auto" ? undefined : data.reviewerModel.trim(),
+        reviewerModel: data.reviewerModel.trim().toLowerCase() === "auto" ? undefined : data.reviewerModel.trim(),
       };
     }
     if (typeof data?.reviewerThinking === "string" && isThinkingLevel(data.reviewerThinking)) {
@@ -804,11 +893,20 @@ function readState(ctx: ExtensionContext): ReviewState {
 }
 
 function persistState(pi: ExtensionAPI, state: ReviewState): void {
+  const preferences = normalizeReviewPreferences(state);
   pi.appendEntry(REVIEW_STATE_ENTRY, {
     ...state,
-    targetLanguage: normalizeTargetLanguage(state.targetLanguage),
-    reviewerModel: state.reviewerModel ?? "auto",
+    ...preferences,
+    reviewerModel: preferences.reviewerModel ?? "auto",
   });
+}
+
+function persistCurrentReviewPreferences(
+  targetLanguage: string,
+  reviewerModel: string | undefined,
+  reviewerThinking: ReviewerThinkingLevel,
+): void {
+  persistReviewPreferences({ targetLanguage, reviewerModel, reviewerThinking });
 }
 
 function updateStatus(
@@ -1047,11 +1145,22 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     clearReviewWidget(ctx);
 
     const state = readState(ctx);
+    const loadedPreferences = readReviewPreferences({
+      targetLanguage: state.targetLanguage,
+      reviewerModel: state.reviewerModel,
+      reviewerThinking: state.reviewerThinking,
+    });
+
     enabled = state.enabled;
     contextMode = state.contextMode;
-    targetLanguage = state.targetLanguage;
-    reviewerModel = state.reviewerModel;
-    reviewerThinking = state.reviewerThinking;
+    targetLanguage = loadedPreferences.preferences.targetLanguage;
+    reviewerModel = loadedPreferences.preferences.reviewerModel;
+    reviewerThinking = loadedPreferences.preferences.reviewerThinking;
+
+    if (loadedPreferences.source === "missing" && hasCustomReviewPreferences(loadedPreferences.preferences)) {
+      persistReviewPreferences(loadedPreferences.preferences);
+    }
+
     updateStatus(ctx, enabled, contextMode, targetLanguage, false);
   });
 
@@ -1153,6 +1262,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
 
         targetLanguage = requestedLanguage;
         persistState(pi, { enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking });
+        persistCurrentReviewPreferences(targetLanguage, reviewerModel, reviewerThinking);
         updateStatus(ctx, enabled, contextMode, targetLanguage, reviewInFlight);
 
         const message = buildTargetLanguageText(targetLanguage);
@@ -1188,6 +1298,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         if (normalizeCommand(value) === "auto") {
           reviewerModel = undefined;
           persistState(pi, { enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking });
+          persistCurrentReviewPreferences(targetLanguage, reviewerModel, reviewerThinking);
           const message = buildModelText(reviewerModel);
           if (ctx.hasUI) {
             ctx.ui.notify(message, "info");
@@ -1226,6 +1337,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
 
         reviewerModel = toCanonicalModelId(resolvedModel.info);
         persistState(pi, { enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking });
+        persistCurrentReviewPreferences(targetLanguage, reviewerModel, reviewerThinking);
 
         const message = buildModelText(reviewerModel);
         if (ctx.hasUI) {
@@ -1295,6 +1407,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
 
         reviewerThinking = requestedReviewerThinking;
         persistState(pi, { enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking });
+        persistCurrentReviewPreferences(targetLanguage, reviewerModel, reviewerThinking);
 
         const message = buildThinkingText(reviewerThinking);
         if (ctx.hasUI) {

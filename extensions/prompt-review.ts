@@ -8,7 +8,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import { fuzzyFilter, Key, type AutocompleteItem } from "@mariozechner/pi-tui";
+import { fuzzyFilter, Key, wrapTextWithAnsi, type AutocompleteItem } from "@mariozechner/pi-tui";
 
 type ReviewContextMode = "off" | "always";
 type ReviewerThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -1016,7 +1016,10 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     const themeColor = review.decision === "needs_clarification" ? "warning" : "accent";
 
     ctx.ui.setWidget(REVIEW_WIDGET_KEY, (_tui, theme) => ({
-      render: () => lines.map((line) => (line ? theme.fg(themeColor, line) : line)),
+      render: (width) => lines.flatMap((line) => {
+        if (!line) return [line];
+        return wrapTextWithAnsi(theme.fg(themeColor, line), Math.max(1, width));
+      }),
       invalidate: () => {},
     }));
   };

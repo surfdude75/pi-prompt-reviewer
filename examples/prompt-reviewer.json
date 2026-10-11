@@ -1,0 +1,10 @@
+{
+  "targetLanguage": "match input",
+  "reviewerModel": "auto",
+  "reviewerThinking": "off",
+  "preventAccidentalSubmission": false,
+  "keybindings": {
+    "submitForReview": "ctrl+enter",
+    "submitWithoutReview": "ctrl+shift+s"
+  }
+}

@@ -21,7 +21,9 @@ prompt before it is sent to the main session.
 - lets you choose the target language, reviewer model, and thinking level
 - remembers the target language, reviewer model, and thinking level across sessions
 - loads the reviewed prompt back into the editor automatically
-- lets you submit immediately without review via `Ctrl+Shift+S`
+- can make Enter insert a new line to prevent accidental submissions
+- provides configurable shortcuts for reviewed and unreviewed submission
+- lets you submit immediately without review via `Ctrl+Shift+S` by default
 - lets you restore the original prompt with a command or shortcut
 - displays token usage and cost for the review step
 
@@ -39,6 +41,8 @@ After installing or editing the extension, reload pi:
 
 ## How it works
 
+With the default configuration:
+
 1. Type a normal prompt.
 2. Press Enter.
 3. The extension reviews it with a lightweight model.
@@ -46,6 +50,53 @@ After installing or editing the extension, reload pi:
 5. A review widget appears above the editor.
 6. Press Enter to send the reviewed prompt, restore the original first, or press
    Ctrl+Shift+S to submit the current editor contents without review.
+
+With accidental-submission prevention enabled, Enter and Shift+Enter both
+insert a new line. Press the configured `submitForReview` shortcut instead to
+start review or send the reviewed prompt.
+
+## Configuration
+
+The extension reads persistent settings from:
+
+```text
+<agent-dir>/extensions/prompt-reviewer.json
+```
+
+The agent directory defaults to `~/.pi/agent`. Copy
+[`examples/prompt-reviewer.json`](examples/prompt-reviewer.json) to that path or
+add the new fields to your existing file:
+
+```json
+{
+  "targetLanguage": "match input",
+  "reviewerModel": "auto",
+  "reviewerThinking": "off",
+  "preventAccidentalSubmission": false,
+  "keybindings": {
+    "submitForReview": "ctrl+enter",
+    "submitWithoutReview": "ctrl+shift+s"
+  }
+}
+```
+
+`preventAccidentalSubmission` defaults to `false`, so existing installations
+keep the current behavior: Enter submits, while Shift+Enter inserts a new line.
+When set to `true`:
+
+- Enter inserts a new line
+- `submitForReview` performs the old Enter action: it submits the prompt for
+  rewriting, or sends it after review
+- `submitWithoutReview` sends the editor contents directly
+
+The suggested defaults are `Ctrl+Enter` for reviewed submission and
+`Ctrl+Shift+S` for direct submission. `Ctrl+Shift+Enter` is also a suitable
+choice for direct submission if your terminal reports that combination
+reliably. Use different shortcuts for the two actions and avoid keys already
+reserved by pi. Key names use pi syntax, such as `ctrl+enter` or
+`ctrl+shift+s`.
+
+After changing the file, run `/reload`.
 
 ## Bypasses
 
@@ -61,7 +112,8 @@ To skip review once for a normal prompt, prefix it with a backslash:
 \send this directly without review
 ```
 
-To submit the current editor contents immediately without review, press:
+To submit the current editor contents immediately without review, use the
+configured `submitWithoutReview` shortcut. The default is:
 
 ```text
 Ctrl+Shift+S
@@ -167,8 +219,9 @@ This is usually the best balance of speed, cost, and review quality.
 Thinking changes are also tested before they are saved. If the test fails, the
 extension warns you and keeps the previous reviewer thinking level.
 
-Target language, reviewer model, and reviewer thinking choices are saved across
-sessions. The enabled/disabled state and context mode remain session-specific.
+Target language, reviewer model, reviewer thinking, accidental-submission
+prevention, and submission keybindings are loaded from the configuration file.
+The enabled/disabled state and context mode remain session-specific.
 
 ## Retry behavior
 

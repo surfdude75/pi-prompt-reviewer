@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import type { Model } from "@mariozechner/pi-ai";
 import {
   createAgentSession,
+  CustomEditor,
   DefaultResourceLoader,
   getAgentDir,
   type ExtensionAPI,
@@ -10,7 +11,14 @@ import {
   SessionManager,
   SettingsManager,
 } from "@mariozechner/pi-coding-agent";
-import { fuzzyFilter, Key, wrapTextWithAnsi, type AutocompleteItem } from "@mariozechner/pi-tui";
+import {
+  fuzzyFilter,
+  Key,
+  matchesKey,
+  wrapTextWithAnsi,
+  type AutocompleteItem,
+  type KeyId,
+} from "@mariozechner/pi-tui";
 
 type ReviewContextMode = "off" | "always";
 type ReviewerThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
@@ -23,7 +31,19 @@ type ReviewState = {
   reviewerThinking: ReviewerThinkingLevel;
 };
 
-type ReviewPreferences = Pick<ReviewState, "targetLanguage" | "reviewerModel" | "reviewerThinking">;
+type SubmissionKeybindings = {
+  submitForReview: KeyId;
+  submitWithoutReview: KeyId;
+};
+
+type ReviewPreferences = Pick<ReviewState, "targetLanguage" | "reviewerModel" | "reviewerThinking"> & {
+  preventAccidentalSubmission: boolean;
+  keybindings: SubmissionKeybindings;
+};
+
+type ReviewPreferencesInput = Partial<Omit<ReviewPreferences, "keybindings">> & {
+  keybindings?: Partial<SubmissionKeybindings>;
+};
 
 type LoadedReviewPreferences = {
   preferences: ReviewPreferences;
@@ -105,7 +125,18 @@ const REVIEW_STATE_ENTRY = "prompt-review:state";
 const REVIEW_PREFERENCES_FILE = "prompt-reviewer.json";
 const REVIEW_WIDGET_KEY = "prompt-review";
 const REVERT_SHORTCUT_LABEL = "Ctrl+Alt+R";
-const SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL = "Ctrl+Shift+S";
+const DEFAULT_SUBMIT_FOR_REVIEW_KEY: KeyId = "ctrl+enter";
+const DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+s";
+const ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+enter";
+const KEY_MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
+const KEY_NAMES = new Set([
+  ..."abcdefghijklmnopqrstuvwxyz0123456789".split(""),
+  "escape", "esc", "enter", "return", "tab", "space", "backspace", "delete", "insert", "clear",
+  "home", "end", "pageup", "pagedown", "up", "down", "left", "right",
+  ...Array.from({ length: 12 }, (_, index) => `f${index + 1}`),
+  "`", "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "!", "@", "#", "$", "%", "^", "&",
+  "*", "(", ")", "_", "+", "|", "~", "{", "}", ":", "<", ">", "?",
+]);
 const REVIEW_CONFIG_TEST_PROMPT = "Reply with exactly OK and nothing else.";
 const MAX_CONTEXT_CHARS = 4_000;
 const AUTO_REVIEWER_MODEL_CANDIDATES = [
@@ -134,6 +165,66 @@ function splitArgs(input: string): string[] {
 
 function normalizeCommand(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function parseKeybindingId(value: string): { modifiers: string[]; key: string } | undefined {
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) return undefined;
+
+  if (normalized === "+") return { modifiers: [], key: "+" };
+
+  if (normalized.endsWith("++")) {
+    return {
+      modifiers: normalized.slice(0, -2).split("+").filter(Boolean),
+      key: "+",
+    };
+  }
+
+  const parts = normalized.split("+");
+  const key = parts.pop();
+  return key ? { modifiers: parts, key } : undefined;
+}
+
+function normalizeKeybinding(value: unknown, fallback: KeyId): KeyId {
+  if (typeof value !== "string") return fallback;
+
+  const parsed = parseKeybindingId(value);
+  if (
+    !parsed
+    || !KEY_NAMES.has(parsed.key)
+    || parsed.modifiers.some((modifier) => !KEY_MODIFIERS.has(modifier))
+    || new Set(parsed.modifiers).size !== parsed.modifiers.length
+  ) {
+    return fallback;
+  }
+
+  return `${parsed.modifiers.length > 0 ? `${parsed.modifiers.join("+")}+` : ""}${parsed.key}` as KeyId;
+}
+
+function formatKeybinding(keybinding: KeyId): string {
+  const parsed = parseKeybindingId(keybinding);
+  if (!parsed) return keybinding;
+
+  const labels: Record<string, string> = {
+    alt: "Alt",
+    ctrl: "Ctrl",
+    enter: "Enter",
+    esc: "Esc",
+    escape: "Escape",
+    shift: "Shift",
+    super: "Super",
+    tab: "Tab",
+  };
+
+  return [...parsed.modifiers, parsed.key]
+    .map((part) => labels[part] ?? part.toUpperCase())
+    .join("+");
+}
+
+function getSubmitForReviewLabel(preferences: ReviewPreferences): string {
+  return preferences.preventAccidentalSubmission
+    ? formatKeybinding(preferences.keybindings.submitForReview)
+    : "Enter";
 }
 
 function isContextMode(value: string): value is ReviewContextMode {
@@ -223,7 +314,11 @@ function buildHelpText(
   targetLanguage: string,
   reviewerModel: string | undefined,
   reviewerThinking: ReviewerThinkingLevel,
+  preferences: ReviewPreferences,
 ): string {
+  const submitForReviewLabel = getSubmitForReviewLabel(preferences);
+  const submitWithoutReviewLabel = formatKeybinding(preferences.keybindings.submitWithoutReview);
+
   return [
     "Usage:",
     "  /prompt-review on",
@@ -246,14 +341,21 @@ function buildHelpText(
     `Current target language: ${targetLanguage}`,
     `Current reviewer model: ${reviewerModel ?? "auto"}`,
     `Current reviewer thinking: ${reviewerThinking}`,
+    `Accidental-submission prevention: ${preferences.preventAccidentalSubmission ? "enabled" : "disabled"}`,
+    `Submit for review: ${submitForReviewLabel}`,
+    `Submit without review: ${submitWithoutReviewLabel}`,
     "",
     "When enabled:",
     "- normal prompts are intercepted before they reach the main session",
     "- a lightweight review session reviews and rewrites the prompt",
     "- the reviewed prompt is loaded back into the editor",
     "- review details are shown above the editor",
-    `- press Enter to send the reviewed prompt, or use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original`,
-    `- press ${SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL} to submit the current editor contents without review`,
+    `- press ${submitForReviewLabel} to submit for review or send an approved prompt`,
+    `- use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original`,
+    `- press ${submitWithoutReviewLabel} to submit the current editor contents without review`,
+    preferences.preventAccidentalSubmission
+      ? "- Enter inserts a new line; Shift+Enter continues to insert a new line"
+      : "- Enter keeps its standard submit behavior; Shift+Enter inserts a new line",
     "",
     "Context modes:",
     "- off: do not send recent conversation context",
@@ -275,17 +377,17 @@ function buildHelpText(
     "- thinking changes are tested before they are saved",
     "",
     "Persistent preferences:",
-    "- target language, reviewer model, and reviewer thinking are saved across sessions",
+    "- target language, reviewer model, reviewer thinking, submission safety, and submission keybindings are loaded from prompt-reviewer.json",
     "- enabled/disabled and context mode remain session-specific settings",
     "",
     "Bypasses:",
     "- slash commands and !bash shortcuts are not reviewed",
     "- prompts with image attachments are sent directly",
     "- prefix a prompt with \\ to skip review once",
-    `- press ${SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL} to submit the current editor contents without review`,
+    `- press ${submitWithoutReviewLabel} to submit the current editor contents without review`,
     "",
-    "Tip:",
-    "- edit .pi/extensions/prompt-review.ts to change the reviewer behavior",
+    "Configuration:",
+    `- edit ${getReviewPreferencesPath()} and run /reload to change submission safety or keybindings`,
   ].join("\n");
 }
 
@@ -295,8 +397,12 @@ function buildStatusText(
   targetLanguage: string,
   reviewerModel: string | undefined,
   reviewerThinking: ReviewerThinkingLevel,
+  preferences: ReviewPreferences,
 ): string {
-  return `prompt review: ${enabled ? "enabled" : "disabled"} (context: ${contextMode}, language: ${targetLanguage}, model: ${reviewerModel ?? "auto"}, thinking: ${reviewerThinking})`;
+  const safety = preferences.preventAccidentalSubmission ? "on" : "off";
+  const submitForReview = getSubmitForReviewLabel(preferences);
+  const submitWithoutReview = formatKeybinding(preferences.keybindings.submitWithoutReview);
+  return `prompt review: ${enabled ? "enabled" : "disabled"} (context: ${contextMode}, language: ${targetLanguage}, model: ${reviewerModel ?? "auto"}, thinking: ${reviewerThinking}, prevent accidental submission: ${safety}, submit for review: ${submitForReview}, submit without review: ${submitWithoutReview})`;
 }
 
 function buildContextModeText(contextMode: ReviewContextMode): string {
@@ -443,6 +549,8 @@ function formatReviewWidgetLines(
   reviewerThinking: ReviewerThinkingLevel,
   tokens: TokenUsage | undefined,
   cost: number | undefined,
+  submitForReviewLabel: string,
+  submitWithoutReviewLabel: string,
 ): string[] {
   const metadataParts = [
     `context: ${contextLabel}`,
@@ -477,7 +585,7 @@ function formatReviewWidgetLines(
   }
 
   lines.push(
-    `Press Enter to send it, use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original prompt, or press ${SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL} to submit the current editor contents without review.`,
+    `Press ${submitForReviewLabel} to send it, use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original prompt, or press ${submitWithoutReviewLabel} to submit the current editor contents without review.`,
   );
 
   return lines;
@@ -781,6 +889,11 @@ function getDefaultReviewPreferences(): ReviewPreferences {
     targetLanguage: DEFAULT_TARGET_LANGUAGE,
     reviewerModel: undefined,
     reviewerThinking: DEFAULT_REVIEWER_THINKING,
+    preventAccidentalSubmission: false,
+    keybindings: {
+      submitForReview: DEFAULT_SUBMIT_FOR_REVIEW_KEY,
+      submitWithoutReview: DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY,
+    },
   };
 }
 
@@ -789,10 +902,13 @@ function getReviewPreferencesPath(): string {
 }
 
 function normalizeReviewPreferences(
-  preferences: Partial<ReviewPreferences> | undefined,
+  preferences: ReviewPreferencesInput | undefined,
   fallback: ReviewPreferences = getDefaultReviewPreferences(),
 ): ReviewPreferences {
-  const normalized: ReviewPreferences = { ...fallback };
+  const normalized: ReviewPreferences = {
+    ...fallback,
+    keybindings: { ...fallback.keybindings },
+  };
 
   if (typeof preferences?.targetLanguage === "string" && preferences.targetLanguage.trim()) {
     normalized.targetLanguage = normalizeTargetLanguage(preferences.targetLanguage);
@@ -807,6 +923,45 @@ function normalizeReviewPreferences(
     normalized.reviewerThinking = preferences.reviewerThinking;
   }
 
+  if (typeof preferences?.preventAccidentalSubmission === "boolean") {
+    normalized.preventAccidentalSubmission = preferences.preventAccidentalSubmission;
+  }
+
+  normalized.keybindings.submitForReview = normalizeKeybinding(
+    preferences?.keybindings?.submitForReview,
+    normalized.keybindings.submitForReview,
+  );
+  normalized.keybindings.submitWithoutReview = normalizeKeybinding(
+    preferences?.keybindings?.submitWithoutReview,
+    normalized.keybindings.submitWithoutReview,
+  );
+
+  if (normalized.preventAccidentalSubmission) {
+    if (["enter", "return"].includes(normalized.keybindings.submitForReview)) {
+      process.stderr.write(
+        `Warning: submitForReview cannot use Enter when preventAccidentalSubmission is enabled; using ${DEFAULT_SUBMIT_FOR_REVIEW_KEY}.\n`,
+      );
+      normalized.keybindings.submitForReview = DEFAULT_SUBMIT_FOR_REVIEW_KEY;
+    }
+
+    if (["enter", "return"].includes(normalized.keybindings.submitWithoutReview)) {
+      process.stderr.write(
+        `Warning: submitWithoutReview cannot use Enter when preventAccidentalSubmission is enabled; using ${DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY}.\n`,
+      );
+      normalized.keybindings.submitWithoutReview = DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY;
+    }
+
+    if (normalized.keybindings.submitForReview === normalized.keybindings.submitWithoutReview) {
+      const fallback = normalized.keybindings.submitForReview === DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY
+        ? ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY
+        : DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY;
+      process.stderr.write(
+        `Warning: prompt reviewer submission keybindings must be different; using ${fallback} for submitWithoutReview.\n`,
+      );
+      normalized.keybindings.submitWithoutReview = fallback;
+    }
+  }
+
   return normalized;
 }
 
@@ -817,7 +972,7 @@ function readReviewPreferences(fallback: ReviewPreferences): LoadedReviewPrefere
   }
 
   try {
-    const data = JSON.parse(readFileSync(preferencesPath, "utf8")) as Partial<ReviewPreferences>;
+    const data = JSON.parse(readFileSync(preferencesPath, "utf8")) as ReviewPreferencesInput;
     return { preferences: normalizeReviewPreferences(data), source: "file" };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -831,6 +986,9 @@ function hasCustomReviewPreferences(preferences: ReviewPreferences): boolean {
     normalizeTargetLanguage(preferences.targetLanguage) !== DEFAULT_TARGET_LANGUAGE
     || Boolean(preferences.reviewerModel)
     || preferences.reviewerThinking !== DEFAULT_REVIEWER_THINKING
+    || preferences.preventAccidentalSubmission
+    || preferences.keybindings.submitForReview !== DEFAULT_SUBMIT_FOR_REVIEW_KEY
+    || preferences.keybindings.submitWithoutReview !== DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY
   );
 }
 
@@ -893,11 +1051,10 @@ function readState(ctx: ExtensionContext): ReviewState {
 }
 
 function persistState(pi: ExtensionAPI, state: ReviewState): void {
-  const preferences = normalizeReviewPreferences(state);
   pi.appendEntry(REVIEW_STATE_ENTRY, {
     ...state,
-    ...preferences,
-    reviewerModel: preferences.reviewerModel ?? "auto",
+    targetLanguage: normalizeTargetLanguage(state.targetLanguage),
+    reviewerModel: state.reviewerModel ?? "auto",
   });
 }
 
@@ -906,7 +1063,13 @@ function persistCurrentReviewPreferences(
   reviewerModel: string | undefined,
   reviewerThinking: ReviewerThinkingLevel,
 ): void {
-  persistReviewPreferences({ targetLanguage, reviewerModel, reviewerThinking });
+  const currentPreferences = readReviewPreferences(getDefaultReviewPreferences()).preferences;
+  persistReviewPreferences({
+    ...currentPreferences,
+    targetLanguage,
+    reviewerModel,
+    reviewerThinking,
+  });
 }
 
 function updateStatus(
@@ -1009,6 +1172,14 @@ function getContextLabel(context: ReviewContext | undefined): string {
 }
 
 export default function promptReviewExtension(pi: ExtensionAPI) {
+  const startupPreferences = readReviewPreferences(getDefaultReviewPreferences());
+  const submissionPreferences = {
+    preventAccidentalSubmission: startupPreferences.preferences.preventAccidentalSubmission,
+    keybindings: { ...startupPreferences.preferences.keybindings },
+  };
+  const submitForReviewLabel = getSubmitForReviewLabel(startupPreferences.preferences);
+  const submitWithoutReviewLabel = formatKeybinding(submissionPreferences.keybindings.submitWithoutReview);
+  let submitEditorForReview: (() => void) | undefined;
   let enabled = true;
   let contextMode: ReviewContextMode = DEFAULT_CONTEXT_MODE;
   let targetLanguage = DEFAULT_TARGET_LANGUAGE;
@@ -1043,7 +1214,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
 
     restorePromptToEditor(
       activeReview.originalText,
-      "Original prompt restored. Press Enter to send it, or edit it first.",
+      `Original prompt restored. Press ${submitForReviewLabel} to send it, or edit it first.`,
     );
     return true;
   };
@@ -1110,6 +1281,8 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       reviewerThinking,
       tokens,
       cost,
+      submitForReviewLabel,
+      submitWithoutReviewLabel,
     );
     const themeColor = review.decision === "needs_clarification" ? "warning" : "accent";
 
@@ -1145,11 +1318,17 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     clearReviewWidget(ctx);
 
     const state = readState(ctx);
-    const loadedPreferences = readReviewPreferences({
-      targetLanguage: state.targetLanguage,
-      reviewerModel: state.reviewerModel,
-      reviewerThinking: state.reviewerThinking,
-    });
+    const loadedPreferences = startupPreferences.source === "missing"
+      ? {
+          preferences: normalizeReviewPreferences(undefined, {
+            ...getDefaultReviewPreferences(),
+            targetLanguage: state.targetLanguage,
+            reviewerModel: state.reviewerModel,
+            reviewerThinking: state.reviewerThinking,
+          }),
+          source: startupPreferences.source,
+        }
+      : startupPreferences;
 
     enabled = state.enabled;
     contextMode = state.contextMode;
@@ -1161,11 +1340,35 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       persistReviewPreferences(loadedPreferences.preferences);
     }
 
+    if (submissionPreferences.preventAccidentalSubmission) {
+      ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+        class SafeSubmissionEditor extends CustomEditor {
+          submitForReview(): void {
+            const submitValue = (this as unknown as { submitValue: () => void }).submitValue;
+            submitValue.call(this);
+          }
+
+          handleInput(data: string): void {
+            if (matchesKey(data, Key.enter)) {
+              super.handleInput("\n");
+              return;
+            }
+            super.handleInput(data);
+          }
+        }
+
+        const editor = new SafeSubmissionEditor(tui, theme, keybindings);
+        submitEditorForReview = () => editor.submitForReview();
+        return editor;
+      });
+    }
+
     updateStatus(ctx, enabled, contextMode, targetLanguage, false);
   });
 
   pi.on("session_shutdown", async (_event, ctx) => {
     completionCtx = undefined;
+    submitEditorForReview = undefined;
     approvedPrompt = undefined;
     activeReview = undefined;
     reviewInFlight = false;
@@ -1184,7 +1387,14 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       const [action, value, ...rest] = tokens;
 
       if (!action || action === "status") {
-        const message = buildStatusText(enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking);
+        const message = buildStatusText(
+          enabled,
+          contextMode,
+          targetLanguage,
+          reviewerModel,
+          reviewerThinking,
+          startupPreferences.preferences,
+        );
         if (ctx.hasUI) {
           ctx.ui.notify(message, "info");
         } else {
@@ -1194,7 +1404,14 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       }
 
       if (action === "help") {
-        const helpText = buildHelpText(enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking);
+        const helpText = buildHelpText(
+          enabled,
+          contextMode,
+          targetLanguage,
+          reviewerModel,
+          reviewerThinking,
+          startupPreferences.preferences,
+        );
         if (ctx.hasUI) {
           await ctx.ui.confirm("Prompt review help", helpText);
         } else {
@@ -1467,7 +1684,14 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       persistState(pi, { enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking });
       updateStatus(ctx, enabled, contextMode, targetLanguage, reviewInFlight);
 
-      const message = buildStatusText(enabled, contextMode, targetLanguage, reviewerModel, reviewerThinking);
+      const message = buildStatusText(
+        enabled,
+        contextMode,
+        targetLanguage,
+        reviewerModel,
+        reviewerThinking,
+        startupPreferences.preferences,
+      );
       if (ctx.hasUI) {
         ctx.ui.notify(message, "info");
       } else {
@@ -1483,7 +1707,20 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     },
   });
 
-  pi.registerShortcut(Key.ctrlShift("s"), {
+  if (submissionPreferences.preventAccidentalSubmission) {
+    pi.registerShortcut(submissionPreferences.keybindings.submitForReview, {
+      description: "Submit the current prompt for review, or send it after review",
+      handler: async (ctx) => {
+        if (!submitEditorForReview) {
+          ctx.ui.notify("The safe-submission editor is not available.", "warning");
+          return;
+        }
+        submitEditorForReview();
+      },
+    });
+  }
+
+  pi.registerShortcut(submissionPreferences.keybindings.submitWithoutReview, {
     description: "Submit the current prompt without prompt review",
     handler: async (ctx) => {
       submitEditorWithoutReview(ctx);
@@ -1564,7 +1801,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       updateStatus(ctx, enabled, contextMode, targetLanguage, false);
       restorePromptToEditor(
         pending.originalText,
-        `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): ${error instanceof Error ? error.message : String(error)}. Original prompt restored. Press Enter again to send it.`,
+        `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): ${error instanceof Error ? error.message : String(error)}. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
       );
       return { action: "handled" };
     }
@@ -1575,7 +1812,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         updateStatus(ctx, enabled, contextMode, targetLanguage, false);
         restorePromptToEditor(
           pending.originalText,
-          `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): no result was returned by the reviewer. Original prompt restored. Press Enter again to send it.`,
+          `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): no result was returned by the reviewer. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
         );
         return { action: "handled" };
       }
@@ -1601,7 +1838,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         updateStatus(ctx, enabled, contextMode, targetLanguage, false);
         restorePromptToEditor(
           pending.originalText,
-          `Prompt review failed with ${retryPending.reviewerModelLabel} (thinking: ${retryPending.reviewerThinking}): ${error instanceof Error ? error.message : String(error)}. Original prompt restored. Press Enter again to send it.`,
+          `Prompt review failed with ${retryPending.reviewerModelLabel} (thinking: ${retryPending.reviewerThinking}): ${error instanceof Error ? error.message : String(error)}. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
         );
         return { action: "handled" };
       }
@@ -1611,7 +1848,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         updateStatus(ctx, enabled, contextMode, targetLanguage, false);
         restorePromptToEditor(
           pending.originalText,
-          `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): no result was returned by the reviewer. Original prompt restored. Press Enter again to send it.`,
+          `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): no result was returned by the reviewer. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
         );
         return { action: "handled" };
       }
@@ -1642,7 +1879,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       reviewRun.cost,
     );
     ctx.ui.notify(
-      `Reviewed prompt loaded. Press Enter to send it, use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original, or press ${SUBMIT_WITHOUT_REVIEW_SHORTCUT_LABEL} to submit without review.`,
+      `Reviewed prompt loaded. Press ${submitForReviewLabel} to send it, use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original, or press ${submitWithoutReviewLabel} to submit without review.`,
       "info",
     );
     updateStatus(ctx, enabled, contextMode, targetLanguage, false);

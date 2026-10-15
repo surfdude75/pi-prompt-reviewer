@@ -31,9 +31,12 @@ type ReviewState = {
   reviewerThinking: ReviewerThinkingLevel;
 };
 
+type SubmissionDelivery = "steer" | "followUp";
+
 type SubmissionKeybindings = {
   submitForReview: KeyId;
   submitWithoutReview: KeyId;
+  submitFollowUpWithoutReview: KeyId;
 };
 
 type ReviewPreferences = Pick<ReviewState, "targetLanguage" | "reviewerModel" | "reviewerThinking"> & {
@@ -57,6 +60,7 @@ type PendingReview = {
   reviewerModelLabel: string;
   reviewerThinking: ReviewerThinkingLevel;
   reviewContext?: ReviewContext;
+  delivery?: "followUp";
   retryCount: number;
 };
 
@@ -90,9 +94,15 @@ type ReviewContext = {
   assistantReply?: ContextBlock;
 };
 
+type ApprovedPrompt = {
+  text: string;
+  delivery?: "followUp";
+};
+
 type ActiveReview = {
   originalText: string;
   reviewedText: string;
+  delivery?: "followUp";
 };
 
 const ROOT_COMMAND_OPTIONS = ["on", "off", "toggle", "status", "help", "context", "language", "model", "thinking", "revert"] as const;
@@ -126,8 +136,11 @@ const REVIEW_PREFERENCES_FILE = "prompt-reviewer.json";
 const REVIEW_WIDGET_KEY = "prompt-review";
 const REVERT_SHORTCUT_LABEL = "Ctrl+Alt+R";
 const DEFAULT_SUBMIT_FOR_REVIEW_KEY: KeyId = "ctrl+enter";
-const DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+s";
-const ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+enter";
+const DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+enter";
+const DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "alt+shift+enter";
+const ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+s";
+const ALTERNATE_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "alt+shift+s";
+const SECONDARY_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "ctrl+alt+shift+enter";
 const KEY_MODIFIERS = new Set(["ctrl", "shift", "alt", "super"]);
 const KEY_NAMES = new Set([
   ..."abcdefghijklmnopqrstuvwxyz0123456789".split(""),
@@ -222,9 +235,7 @@ function formatKeybinding(keybinding: KeyId): string {
 }
 
 function getSubmitForReviewLabel(preferences: ReviewPreferences): string {
-  return preferences.preventAccidentalSubmission
-    ? formatKeybinding(preferences.keybindings.submitForReview)
-    : "Enter";
+  return formatKeybinding(preferences.keybindings.submitForReview);
 }
 
 function isContextMode(value: string): value is ReviewContextMode {
@@ -318,6 +329,9 @@ function buildHelpText(
 ): string {
   const submitForReviewLabel = getSubmitForReviewLabel(preferences);
   const submitWithoutReviewLabel = formatKeybinding(preferences.keybindings.submitWithoutReview);
+  const submitFollowUpWithoutReviewLabel = formatKeybinding(
+    preferences.keybindings.submitFollowUpWithoutReview,
+  );
 
   return [
     "Usage:",
@@ -344,6 +358,8 @@ function buildHelpText(
     `Accidental-submission prevention: ${preferences.preventAccidentalSubmission ? "enabled" : "disabled"}`,
     `Submit for review: ${submitForReviewLabel}`,
     `Submit without review: ${submitWithoutReviewLabel}`,
+    "Submit follow-up for review: Alt+Enter",
+    `Submit follow-up without review: ${submitFollowUpWithoutReviewLabel}`,
     "",
     "When enabled:",
     "- normal prompts are intercepted before they reach the main session",
@@ -351,11 +367,13 @@ function buildHelpText(
     "- the reviewed prompt is loaded back into the editor",
     "- review details are shown above the editor",
     `- press ${submitForReviewLabel} to submit for review or send an approved prompt`,
+    "- press Alt+Enter to review a follow-up message and preserve it as a follow-up",
     `- use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original`,
     `- press ${submitWithoutReviewLabel} to submit the current editor contents without review`,
+    `- press ${submitFollowUpWithoutReviewLabel} to submit a follow-up without review`,
     preferences.preventAccidentalSubmission
-      ? "- Enter inserts a new line; Shift+Enter continues to insert a new line"
-      : "- Enter keeps its standard submit behavior; Shift+Enter inserts a new line",
+      ? "- Enter and Shift+Enter both insert a new line"
+      : "- Enter submits for review; Shift+Enter inserts a new line",
     "",
     "Context modes:",
     "- off: do not send recent conversation context",
@@ -385,6 +403,7 @@ function buildHelpText(
     "- prompts with image attachments are sent directly",
     "- prefix a prompt with \\ to skip review once",
     `- press ${submitWithoutReviewLabel} to submit the current editor contents without review`,
+    `- press ${submitFollowUpWithoutReviewLabel} to submit a follow-up without review`,
     "",
     "Configuration:",
     `- edit ${getReviewPreferencesPath()} and run /reload to change submission safety or keybindings`,
@@ -402,7 +421,8 @@ function buildStatusText(
   const safety = preferences.preventAccidentalSubmission ? "on" : "off";
   const submitForReview = getSubmitForReviewLabel(preferences);
   const submitWithoutReview = formatKeybinding(preferences.keybindings.submitWithoutReview);
-  return `prompt review: ${enabled ? "enabled" : "disabled"} (context: ${contextMode}, language: ${targetLanguage}, model: ${reviewerModel ?? "auto"}, thinking: ${reviewerThinking}, prevent accidental submission: ${safety}, submit for review: ${submitForReview}, submit without review: ${submitWithoutReview})`;
+  const submitFollowUpWithoutReview = formatKeybinding(preferences.keybindings.submitFollowUpWithoutReview);
+  return `prompt review: ${enabled ? "enabled" : "disabled"} (context: ${contextMode}, language: ${targetLanguage}, model: ${reviewerModel ?? "auto"}, thinking: ${reviewerThinking}, prevent accidental submission: ${safety}, submit for review: ${submitForReview}, submit without review: ${submitWithoutReview}, follow-up for review: Alt+Enter, follow-up without review: ${submitFollowUpWithoutReview})`;
 }
 
 function buildContextModeText(contextMode: ReviewContextMode): string {
@@ -889,10 +909,11 @@ function getDefaultReviewPreferences(): ReviewPreferences {
     targetLanguage: DEFAULT_TARGET_LANGUAGE,
     reviewerModel: undefined,
     reviewerThinking: DEFAULT_REVIEWER_THINKING,
-    preventAccidentalSubmission: false,
+    preventAccidentalSubmission: true,
     keybindings: {
       submitForReview: DEFAULT_SUBMIT_FOR_REVIEW_KEY,
       submitWithoutReview: DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY,
+      submitFollowUpWithoutReview: DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY,
     },
   };
 }
@@ -935,31 +956,72 @@ function normalizeReviewPreferences(
     preferences?.keybindings?.submitWithoutReview,
     normalized.keybindings.submitWithoutReview,
   );
+  normalized.keybindings.submitFollowUpWithoutReview = normalizeKeybinding(
+    preferences?.keybindings?.submitFollowUpWithoutReview,
+    normalized.keybindings.submitFollowUpWithoutReview,
+  );
 
-  if (normalized.preventAccidentalSubmission) {
-    if (["enter", "return"].includes(normalized.keybindings.submitForReview)) {
-      process.stderr.write(
-        `Warning: submitForReview cannot use Enter when preventAccidentalSubmission is enabled; using ${DEFAULT_SUBMIT_FOR_REVIEW_KEY}.\n`,
-      );
-      normalized.keybindings.submitForReview = DEFAULT_SUBMIT_FOR_REVIEW_KEY;
-    }
+  if (["enter", "return"].includes(normalized.keybindings.submitForReview)) {
+    process.stderr.write(
+      `Warning: submitForReview cannot use Enter because Enter behavior is controlled separately; using ${DEFAULT_SUBMIT_FOR_REVIEW_KEY}.\n`,
+    );
+    normalized.keybindings.submitForReview = DEFAULT_SUBMIT_FOR_REVIEW_KEY;
+  }
 
-    if (["enter", "return"].includes(normalized.keybindings.submitWithoutReview)) {
-      process.stderr.write(
-        `Warning: submitWithoutReview cannot use Enter when preventAccidentalSubmission is enabled; using ${DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY}.\n`,
-      );
-      normalized.keybindings.submitWithoutReview = DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY;
-    }
+  if (["enter", "return"].includes(normalized.keybindings.submitWithoutReview)) {
+    process.stderr.write(
+      `Warning: submitWithoutReview cannot use Enter; using ${DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY}.\n`,
+    );
+    normalized.keybindings.submitWithoutReview = DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY;
+  }
 
-    if (normalized.keybindings.submitForReview === normalized.keybindings.submitWithoutReview) {
-      const fallback = normalized.keybindings.submitForReview === DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY
-        ? ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY
-        : DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY;
-      process.stderr.write(
-        `Warning: prompt reviewer submission keybindings must be different; using ${fallback} for submitWithoutReview.\n`,
-      );
-      normalized.keybindings.submitWithoutReview = fallback;
-    }
+  if (["enter", "return"].includes(normalized.keybindings.submitFollowUpWithoutReview)) {
+    process.stderr.write(
+      `Warning: submitFollowUpWithoutReview cannot use Enter; using ${DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY}.\n`,
+    );
+    normalized.keybindings.submitFollowUpWithoutReview = DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY;
+  }
+
+  const reservedFollowUpKey: KeyId = "alt+enter";
+  const configurableKeyDefaults: Array<[keyof SubmissionKeybindings, KeyId]> = [
+    ["submitForReview", DEFAULT_SUBMIT_FOR_REVIEW_KEY],
+    ["submitWithoutReview", DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY],
+    ["submitFollowUpWithoutReview", DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY],
+  ];
+  for (const [name, fallback] of configurableKeyDefaults) {
+    if (normalized.keybindings[name] !== reservedFollowUpKey) continue;
+    process.stderr.write(
+      `Warning: ${name} cannot use Alt+Enter because it is reserved for reviewed follow-ups; using ${fallback}.\n`,
+    );
+    normalized.keybindings[name] = fallback;
+  }
+
+  if (normalized.keybindings.submitForReview === normalized.keybindings.submitWithoutReview) {
+    const fallback = normalized.keybindings.submitForReview === DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY
+      ? ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY
+      : DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY;
+    process.stderr.write(
+      `Warning: prompt reviewer submission keybindings must be different; using ${fallback} for submitWithoutReview.\n`,
+    );
+    normalized.keybindings.submitWithoutReview = fallback;
+  }
+
+  if (
+    normalized.keybindings.submitFollowUpWithoutReview === normalized.keybindings.submitForReview
+    || normalized.keybindings.submitFollowUpWithoutReview === normalized.keybindings.submitWithoutReview
+  ) {
+    const fallback = [
+      DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY,
+      ALTERNATE_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY,
+      SECONDARY_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY,
+    ].find((keybinding) => (
+      keybinding !== normalized.keybindings.submitForReview
+      && keybinding !== normalized.keybindings.submitWithoutReview
+    ))!;
+    process.stderr.write(
+      `Warning: prompt reviewer submission keybindings must be different; using ${fallback} for submitFollowUpWithoutReview.\n`,
+    );
+    normalized.keybindings.submitFollowUpWithoutReview = fallback;
   }
 
   return normalized;
@@ -986,9 +1048,10 @@ function hasCustomReviewPreferences(preferences: ReviewPreferences): boolean {
     normalizeTargetLanguage(preferences.targetLanguage) !== DEFAULT_TARGET_LANGUAGE
     || Boolean(preferences.reviewerModel)
     || preferences.reviewerThinking !== DEFAULT_REVIEWER_THINKING
-    || preferences.preventAccidentalSubmission
+    || !preferences.preventAccidentalSubmission
     || preferences.keybindings.submitForReview !== DEFAULT_SUBMIT_FOR_REVIEW_KEY
     || preferences.keybindings.submitWithoutReview !== DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY
+    || preferences.keybindings.submitFollowUpWithoutReview !== DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY
   );
 }
 
@@ -1179,27 +1242,31 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
   };
   const submitForReviewLabel = getSubmitForReviewLabel(startupPreferences.preferences);
   const submitWithoutReviewLabel = formatKeybinding(submissionPreferences.keybindings.submitWithoutReview);
+  const submitFollowUpWithoutReviewLabel = formatKeybinding(
+    submissionPreferences.keybindings.submitFollowUpWithoutReview,
+  );
   let submitEditorForReview: (() => void) | undefined;
   let enabled = true;
   let contextMode: ReviewContextMode = DEFAULT_CONTEXT_MODE;
   let targetLanguage = DEFAULT_TARGET_LANGUAGE;
   let reviewerModel: string | undefined;
   let reviewerThinking: ReviewerThinkingLevel = DEFAULT_REVIEWER_THINKING;
-  let approvedPrompt: string | undefined;
+  let approvedPrompt: ApprovedPrompt | undefined;
   let activeReview: ActiveReview | undefined;
   let currentCtx: ExtensionContext | undefined;
   let reviewInFlight = false;
+  let pendingInteractiveDelivery: "followUp" | undefined;
 
   const clearReviewWidget = (ctx: ExtensionContext | undefined = currentCtx) => {
     if (!ctx?.hasUI) return;
     ctx.ui.setWidget(REVIEW_WIDGET_KEY, undefined);
   };
 
-  const restorePromptToEditor = (text: string, message: string) => {
+  const restorePromptToEditor = (text: string, message: string, delivery?: "followUp") => {
     if (!currentCtx?.hasUI) return;
     clearReviewWidget(currentCtx);
     activeReview = undefined;
-    approvedPrompt = text;
+    approvedPrompt = { text, delivery };
     currentCtx.ui.setEditorText(text);
     currentCtx.ui.notify(message, "info");
     updateStatus(currentCtx, enabled, contextMode, targetLanguage, reviewInFlight);
@@ -1215,11 +1282,12 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     restorePromptToEditor(
       activeReview.originalText,
       `Original prompt restored. Press ${submitForReviewLabel} to send it, or edit it first.`,
+      activeReview.delivery,
     );
     return true;
   };
 
-  const submitEditorWithoutReview = (ctx: ExtensionContext) => {
+  const submitEditorWithoutReview = (ctx: ExtensionContext, delivery: SubmissionDelivery) => {
     currentCtx = ctx;
     completionCtx = ctx;
 
@@ -1239,10 +1307,19 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       return;
     }
 
+    if (prompt.startsWith("/") || prompt.startsWith("!")) {
+      if (!submitEditorForReview) {
+        ctx.ui.notify("The prompt-review editor is not available.", "warning");
+        return;
+      }
+      submitEditorForReview();
+      return;
+    }
+
     const sendImmediately = ctx.isIdle();
 
     try {
-      pi.sendUserMessage(prompt, sendImmediately ? undefined : { deliverAs: "followUp" });
+      pi.sendUserMessage(prompt, sendImmediately ? undefined : { deliverAs: delivery });
     } catch (error) {
       ctx.ui.notify(
         `Failed to submit without review: ${error instanceof Error ? error.message : String(error)}`,
@@ -1256,7 +1333,12 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     clearReviewWidget(ctx);
     ctx.ui.setEditorText("");
     updateStatus(ctx, enabled, contextMode, targetLanguage, reviewInFlight);
-    ctx.ui.notify(sendImmediately ? "Submitted without prompt review." : "Queued without prompt review.", "info");
+    const message = sendImmediately
+      ? "Submitted without prompt review."
+      : delivery === "followUp"
+        ? "Queued follow-up without prompt review."
+        : "Sent without prompt review.";
+    ctx.ui.notify(message, "info");
   };
 
   const showReviewWidget = (
@@ -1340,28 +1422,51 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       persistReviewPreferences(loadedPreferences.preferences);
     }
 
-    if (submissionPreferences.preventAccidentalSubmission) {
-      ctx.ui.setEditorComponent((tui, theme, keybindings) => {
-        class SafeSubmissionEditor extends CustomEditor {
-          submitForReview(): void {
-            const submitValue = (this as unknown as { submitValue: () => void }).submitValue;
-            submitValue.call(this);
+    ctx.ui.setEditorComponent((tui, theme, keybindings) => {
+      class PromptReviewEditor extends CustomEditor {
+        submitForReview(): void {
+          pendingInteractiveDelivery = undefined;
+          const submitValue = (this as unknown as { submitValue: () => void }).submitValue;
+          submitValue.call(this);
+        }
+
+        submitFollowUpForReview(): void {
+          pendingInteractiveDelivery = "followUp";
+          const actionHandlers = (this as unknown as {
+            actionHandlers: Map<string, () => void>;
+          }).actionHandlers;
+          const submitFollowUp = actionHandlers.get("app.message.followUp");
+          if (submitFollowUp) {
+            submitFollowUp();
+            return;
           }
 
-          handleInput(data: string): void {
-            if (matchesKey(data, Key.enter)) {
+          const submitValue = (this as unknown as { submitValue: () => void }).submitValue;
+          submitValue.call(this);
+        }
+
+        handleInput(data: string): void {
+          if (matchesKey(data, "alt+enter")) {
+            this.submitFollowUpForReview();
+            return;
+          }
+
+          if (matchesKey(data, Key.enter)) {
+            pendingInteractiveDelivery = undefined;
+            if (submissionPreferences.preventAccidentalSubmission) {
               super.handleInput("\n");
               return;
             }
-            super.handleInput(data);
           }
-        }
 
-        const editor = new SafeSubmissionEditor(tui, theme, keybindings);
-        submitEditorForReview = () => editor.submitForReview();
-        return editor;
-      });
-    }
+          super.handleInput(data);
+        }
+      }
+
+      const editor = new PromptReviewEditor(tui, theme, keybindings);
+      submitEditorForReview = () => editor.submitForReview();
+      return editor;
+    });
 
     updateStatus(ctx, enabled, contextMode, targetLanguage, false);
   });
@@ -1369,6 +1474,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
   pi.on("session_shutdown", async (_event, ctx) => {
     completionCtx = undefined;
     submitEditorForReview = undefined;
+    pendingInteractiveDelivery = undefined;
     approvedPrompt = undefined;
     activeReview = undefined;
     reviewInFlight = false;
@@ -1707,23 +1813,28 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     },
   });
 
-  if (submissionPreferences.preventAccidentalSubmission) {
-    pi.registerShortcut(submissionPreferences.keybindings.submitForReview, {
-      description: "Submit the current prompt for review, or send it after review",
-      handler: async (ctx) => {
-        if (!submitEditorForReview) {
-          ctx.ui.notify("The safe-submission editor is not available.", "warning");
-          return;
-        }
-        submitEditorForReview();
-      },
-    });
-  }
+  pi.registerShortcut(submissionPreferences.keybindings.submitForReview, {
+    description: "Submit the current prompt for review, or send it after review",
+    handler: async (ctx) => {
+      if (!submitEditorForReview) {
+        ctx.ui.notify("The prompt-review editor is not available.", "warning");
+        return;
+      }
+      submitEditorForReview();
+    },
+  });
 
   pi.registerShortcut(submissionPreferences.keybindings.submitWithoutReview, {
     description: "Submit the current prompt without prompt review",
     handler: async (ctx) => {
-      submitEditorWithoutReview(ctx);
+      submitEditorWithoutReview(ctx, "steer");
+    },
+  });
+
+  pi.registerShortcut(submissionPreferences.keybindings.submitFollowUpWithoutReview, {
+    description: "Submit the current prompt as a follow-up without prompt review",
+    handler: async (ctx) => {
+      submitEditorWithoutReview(ctx, "followUp");
     },
   });
 
@@ -1731,13 +1842,24 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     currentCtx = ctx;
     completionCtx = ctx;
 
+    const runtimeStreamingBehavior = (event as typeof event & {
+      streamingBehavior?: SubmissionDelivery;
+    }).streamingBehavior;
+    const submissionDelivery: "followUp" | undefined = runtimeStreamingBehavior === "followUp"
+      || (runtimeStreamingBehavior == null && pendingInteractiveDelivery === "followUp")
+      ? "followUp"
+      : undefined;
+    if (event.source === "interactive") pendingInteractiveDelivery = undefined;
+
     if (!ctx.hasUI) return { action: "continue" };
     if (!enabled) return { action: "continue" };
     if (event.source === "extension") return { action: "continue" };
     if (event.images && event.images.length > 0) return { action: "continue" };
     if (!event.text.trim()) return { action: "continue" };
 
+    let reviewDelivery = submissionDelivery;
     if (activeReview && event.text !== activeReview.reviewedText) {
+      reviewDelivery ??= activeReview.delivery;
       activeReview = undefined;
       clearReviewWidget(ctx);
     }
@@ -1752,10 +1874,19 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       return { action: "continue" };
     }
 
-    if (approvedPrompt && event.text === approvedPrompt) {
+    if (approvedPrompt && event.text === approvedPrompt.text) {
+      const approvedDelivery = approvedPrompt.delivery;
       approvedPrompt = undefined;
       activeReview = undefined;
       clearReviewWidget(ctx);
+
+      if (approvedDelivery === "followUp" && !ctx.isIdle()) {
+        pi.sendUserMessage(event.text, { deliverAs: "followUp" });
+        ctx.ui.setEditorText("");
+        updateStatus(ctx, enabled, contextMode, targetLanguage, reviewInFlight);
+        return { action: "handled" };
+      }
+
       return { action: "continue" };
     }
 
@@ -1782,6 +1913,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       reviewerModelLabel: formatModelLabel(reviewerModelMeta),
       reviewerThinking: effectiveReviewerThinking,
       reviewContext,
+      delivery: reviewDelivery,
       retryCount: 0,
     };
 
@@ -1802,6 +1934,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       restorePromptToEditor(
         pending.originalText,
         `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): ${error instanceof Error ? error.message : String(error)}. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
+        pending.delivery,
       );
       return { action: "handled" };
     }
@@ -1813,6 +1946,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         restorePromptToEditor(
           pending.originalText,
           `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): no result was returned by the reviewer. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
+          pending.delivery,
         );
         return { action: "handled" };
       }
@@ -1839,6 +1973,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         restorePromptToEditor(
           pending.originalText,
           `Prompt review failed with ${retryPending.reviewerModelLabel} (thinking: ${retryPending.reviewerThinking}): ${error instanceof Error ? error.message : String(error)}. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
+          retryPending.delivery,
         );
         return { action: "handled" };
       }
@@ -1849,6 +1984,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         restorePromptToEditor(
           pending.originalText,
           `Prompt review failed with ${pending.reviewerModelLabel} (thinking: ${pending.reviewerThinking}): no result was returned by the reviewer. Original prompt restored. Press ${submitForReviewLabel} again to send it.`,
+          pending.delivery,
         );
         return { action: "handled" };
       }
@@ -1861,10 +1997,11 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     const candidatePrompt = review.prompt || pending.originalText;
     const changed = candidatePrompt.trim() !== pending.originalText.trim();
 
-    approvedPrompt = candidatePrompt;
+    approvedPrompt = { text: candidatePrompt, delivery: pending.delivery };
     activeReview = {
       originalText: pending.originalText,
       reviewedText: candidatePrompt,
+      delivery: pending.delivery,
     };
     ctx.ui.setEditorText(candidatePrompt);
     showReviewWidget(
@@ -1879,7 +2016,7 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
       reviewRun.cost,
     );
     ctx.ui.notify(
-      `Reviewed prompt loaded. Press ${submitForReviewLabel} to send it, use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original, or press ${submitWithoutReviewLabel} to submit without review.`,
+      `Reviewed prompt loaded. Press ${submitForReviewLabel} to send it, use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original, press ${submitWithoutReviewLabel} to submit without review, or press ${submitFollowUpWithoutReviewLabel} to submit as a follow-up without review.`,
       "info",
     );
     updateStatus(ctx, enabled, contextMode, targetLanguage, false);

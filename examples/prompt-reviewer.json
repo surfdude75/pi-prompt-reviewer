@@ -2,9 +2,10 @@
   "targetLanguage": "match input",
   "reviewerModel": "auto",
   "reviewerThinking": "off",
-  "preventAccidentalSubmission": false,
+  "preventAccidentalSubmission": true,
   "keybindings": {
     "submitForReview": "ctrl+enter",
-    "submitWithoutReview": "ctrl+shift+s"
+    "submitWithoutReview": "ctrl+shift+enter",
+    "submitFollowUpWithoutReview": "alt+shift+enter"
   }
 }

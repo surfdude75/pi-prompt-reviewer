@@ -4,8 +4,8 @@
   "reviewerThinking": "off",
   "preventAccidentalSubmission": true,
   "keybindings": {
-    "submitForReview": "ctrl+enter",
-    "submitWithoutReview": "ctrl+shift+enter",
-    "submitFollowUpWithoutReview": "alt+shift+enter"
+    "submitForReview": "ctrl+shift+enter",
+    "submitWithoutReview": "ctrl+enter",
+    "submitFollowUpWithoutReview": "alt+enter"
   }
 }

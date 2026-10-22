@@ -135,9 +135,10 @@ const REVIEW_STATE_ENTRY = "prompt-review:state";
 const REVIEW_PREFERENCES_FILE = "prompt-reviewer.json";
 const REVIEW_WIDGET_KEY = "prompt-review";
 const REVERT_SHORTCUT_LABEL = "Ctrl+Alt+R";
-const DEFAULT_SUBMIT_FOR_REVIEW_KEY: KeyId = "ctrl+enter";
-const DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+enter";
-const DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "alt+shift+enter";
+const DEFAULT_SUBMIT_FOR_REVIEW_KEY: KeyId = "ctrl+shift+enter";
+const DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+enter";
+const SUBMIT_FOLLOW_UP_FOR_REVIEW_KEY: KeyId = "alt+shift+enter";
+const DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "alt+enter";
 const ALTERNATE_SUBMIT_WITHOUT_REVIEW_KEY: KeyId = "ctrl+shift+s";
 const ALTERNATE_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "alt+shift+s";
 const SECONDARY_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY: KeyId = "ctrl+alt+shift+enter";
@@ -358,7 +359,7 @@ function buildHelpText(
     `Accidental-submission prevention: ${preferences.preventAccidentalSubmission ? "enabled" : "disabled"}`,
     `Submit for review: ${submitForReviewLabel}`,
     `Submit without review: ${submitWithoutReviewLabel}`,
-    "Submit follow-up for review: Alt+Enter",
+    `Submit follow-up for review: ${formatKeybinding(SUBMIT_FOLLOW_UP_FOR_REVIEW_KEY)}`,
     `Submit follow-up without review: ${submitFollowUpWithoutReviewLabel}`,
     "",
     "When enabled:",
@@ -367,7 +368,7 @@ function buildHelpText(
     "- the reviewed prompt is loaded back into the editor",
     "- review details are shown above the editor",
     `- press ${submitForReviewLabel} to submit for review or send an approved prompt`,
-    "- press Alt+Enter to review a follow-up message and preserve it as a follow-up",
+    `- press ${formatKeybinding(SUBMIT_FOLLOW_UP_FOR_REVIEW_KEY)} to review a follow-up message and preserve it as a follow-up`,
     `- use /prompt-review revert or ${REVERT_SHORTCUT_LABEL} to restore the original`,
     `- press ${submitWithoutReviewLabel} to submit the current editor contents without review`,
     `- press ${submitFollowUpWithoutReviewLabel} to submit a follow-up without review`,
@@ -422,7 +423,7 @@ function buildStatusText(
   const submitForReview = getSubmitForReviewLabel(preferences);
   const submitWithoutReview = formatKeybinding(preferences.keybindings.submitWithoutReview);
   const submitFollowUpWithoutReview = formatKeybinding(preferences.keybindings.submitFollowUpWithoutReview);
-  return `prompt review: ${enabled ? "enabled" : "disabled"} (context: ${contextMode}, language: ${targetLanguage}, model: ${reviewerModel ?? "auto"}, thinking: ${reviewerThinking}, prevent accidental submission: ${safety}, submit for review: ${submitForReview}, submit without review: ${submitWithoutReview}, follow-up for review: Alt+Enter, follow-up without review: ${submitFollowUpWithoutReview})`;
+  return `prompt review: ${enabled ? "enabled" : "disabled"} (context: ${contextMode}, language: ${targetLanguage}, model: ${reviewerModel ?? "auto"}, thinking: ${reviewerThinking}, prevent accidental submission: ${safety}, submit for review: ${submitForReview}, submit without review: ${submitWithoutReview}, follow-up for review: ${formatKeybinding(SUBMIT_FOLLOW_UP_FOR_REVIEW_KEY)}, follow-up without review: ${submitFollowUpWithoutReview})`;
 }
 
 function buildContextModeText(contextMode: ReviewContextMode): string {
@@ -982,7 +983,7 @@ function normalizeReviewPreferences(
     normalized.keybindings.submitFollowUpWithoutReview = DEFAULT_SUBMIT_FOLLOW_UP_WITHOUT_REVIEW_KEY;
   }
 
-  const reservedFollowUpKey: KeyId = "alt+enter";
+  const reservedFollowUpKey = SUBMIT_FOLLOW_UP_FOR_REVIEW_KEY;
   const configurableKeyDefaults: Array<[keyof SubmissionKeybindings, KeyId]> = [
     ["submitForReview", DEFAULT_SUBMIT_FOR_REVIEW_KEY],
     ["submitWithoutReview", DEFAULT_SUBMIT_WITHOUT_REVIEW_KEY],
@@ -991,7 +992,7 @@ function normalizeReviewPreferences(
   for (const [name, fallback] of configurableKeyDefaults) {
     if (normalized.keybindings[name] !== reservedFollowUpKey) continue;
     process.stderr.write(
-      `Warning: ${name} cannot use Alt+Enter because it is reserved for reviewed follow-ups; using ${fallback}.\n`,
+      `Warning: ${name} cannot use ${formatKeybinding(reservedFollowUpKey)} because it is reserved for reviewed follow-ups; using ${fallback}.\n`,
     );
     normalized.keybindings[name] = fallback;
   }
@@ -1446,8 +1447,14 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
         }
 
         handleInput(data: string): void {
-          if (matchesKey(data, "alt+enter")) {
+          if (matchesKey(data, SUBMIT_FOLLOW_UP_FOR_REVIEW_KEY)) {
             this.submitFollowUpForReview();
+            return;
+          }
+
+          // Handle this before Pi's reserved app.message.followUp shortcut.
+          if (matchesKey(data, submissionPreferences.keybindings.submitFollowUpWithoutReview)) {
+            submitEditorWithoutReview(ctx, "followUp");
             return;
           }
 
@@ -1828,13 +1835,6 @@ export default function promptReviewExtension(pi: ExtensionAPI) {
     description: "Submit the current prompt without prompt review",
     handler: async (ctx) => {
       submitEditorWithoutReview(ctx, "steer");
-    },
-  });
-
-  pi.registerShortcut(submissionPreferences.keybindings.submitFollowUpWithoutReview, {
-    description: "Submit the current prompt as a follow-up without prompt review",
-    handler: async (ctx) => {
-      submitEditorWithoutReview(ctx, "followUp");
     },
   });
 

@@ -22,12 +22,12 @@ prompt before it is sent to the main session.
 - remembers the target language, reviewer model, and thinking level across sessions
 - loads the reviewed prompt back into the editor automatically
 - makes Enter insert a new line by default to prevent accidental submissions
-- keeps reviewed submission available through `Ctrl+Enter` regardless of the
+- keeps reviewed submission available through `Ctrl+Shift+Enter` regardless of the
   Enter behavior
-- reviews follow-up messages submitted with `Alt+Enter`
+- reviews follow-up messages submitted with `Alt+Shift+Enter`
 - provides configurable shortcuts for reviewed and unreviewed submission
-- lets you submit without review via `Ctrl+Shift+Enter` by default
-- lets you queue a follow-up without review via `Alt+Shift+Enter` by default
+- lets you submit without review via `Ctrl+Enter` by default
+- lets you queue a follow-up without review via `Alt+Enter` by default
 - lets you restore the original prompt with a command or shortcut
 - displays token usage and cost for the review step
 
@@ -48,12 +48,12 @@ After installing or editing the extension, reload pi:
 With the default configuration:
 
 1. Type a normal prompt.
-2. Press Ctrl+Enter.
+2. Press Ctrl+Shift+Enter.
 3. The extension reviews it with a lightweight model.
 4. The reviewed prompt is loaded back into the editor.
 5. A review widget appears above the editor.
-6. Press Ctrl+Enter to send the reviewed prompt, restore the original first, or
-   press Ctrl+Shift+Enter to submit the current editor contents without review.
+6. Press Ctrl+Shift+Enter to send the reviewed prompt, restore the original first,
+   or press Ctrl+Enter to submit the current editor contents without review.
 
 Enter and Shift+Enter both insert a new line by default. The configured
 `submitForReview` shortcut always starts review or sends the reviewed prompt,
@@ -78,9 +78,9 @@ add the new fields to your existing file:
   "reviewerThinking": "off",
   "preventAccidentalSubmission": true,
   "keybindings": {
-    "submitForReview": "ctrl+enter",
-    "submitWithoutReview": "ctrl+shift+enter",
-    "submitFollowUpWithoutReview": "alt+shift+enter"
+    "submitForReview": "ctrl+shift+enter",
+    "submitWithoutReview": "ctrl+enter",
+    "submitFollowUpWithoutReview": "alt+enter"
   }
 }
 ```
@@ -94,13 +94,13 @@ Enter key:
 The configured `submitForReview` shortcut remains active in both modes. The
 submission defaults are:
 
-- `Ctrl+Enter`: submit for review, or send the reviewed prompt
-- `Ctrl+Shift+Enter`: submit without review; while the agent is running, send it
+- `Ctrl+Shift+Enter`: submit for review, or send the reviewed prompt
+- `Ctrl+Enter`: submit without review; while the agent is running, send it
   as a steering message
-- `Alt+Enter`: submit a follow-up for review
-- `Alt+Shift+Enter`: queue a follow-up without review
+- `Alt+Enter`: queue a follow-up without review
+- `Alt+Shift+Enter`: submit a follow-up for review
 
-Use different shortcuts for the three configurable actions. `Alt+Enter` is
+Use different shortcuts for the three configurable actions. `Alt+Shift+Enter` is
 reserved for reviewed follow-ups, and other keys already reserved by pi should
 also be avoided. Modified Enter combinations depend on terminal support. Key
 names use pi syntax, such as `ctrl+enter` or `alt+shift+enter`.
@@ -125,25 +125,25 @@ To submit the current editor contents immediately without review, use the
 configured `submitWithoutReview` shortcut. The default is:
 
 ```text
-Ctrl+Shift+Enter
+Ctrl+Enter
 ```
 
 To queue the current editor contents as a follow-up without review, use the
 configured `submitFollowUpWithoutReview` shortcut. The default is:
 
 ```text
-Alt+Shift+Enter
+Alt+Enter
 ```
 
 ## Usage
 
 ### Submit follow-up messages
 
-While the agent is running, press `Alt+Enter` to submit a follow-up for review.
-After the reviewed text is loaded into the editor, press `Ctrl+Enter` to queue
+While the agent is running, press `Alt+Shift+Enter` to submit a follow-up for review.
+After the reviewed text is loaded into the editor, press `Ctrl+Shift+Enter` to queue
 it while preserving its follow-up behavior.
 
-Press `Alt+Shift+Enter` to queue the current editor contents as a follow-up
+Press `Alt+Enter` to queue the current editor contents as a follow-up
 without review.
 
 ### Enable or disable prompt review
